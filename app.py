@@ -14,11 +14,10 @@ import yfinance as yf
 # إعدادات واجهة التطبيق
 st.set_page_config(page_title="الوكيل المالي - التداول الآلي على MT5", page_icon="🤖", layout="wide")
 
-# جلب أسرار السحابة
-metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", ""))
-metaapi_account_id = st.secrets.get("METAAPI_ACCOUNT_ID", os.environ.get("METAAPI_ACCOUNT_ID", ""))
+# جلب أسرار السحابة مع إزالة أي مسافات زائدة تلقائياً (.strip())
+metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", "")).strip()
+metaapi_account_id = st.secrets.get("METAAPI_ACCOUNT_ID", os.environ.get("METAAPI_ACCOUNT_ID", "")).strip()
 
-# خريطة الأصول للفوركس والذهب والأسواق
 ASSET_MAP = {
     "ذهب": {"yf": "GC=F", "mt5": "XAUUSD"},
     "الذهب": {"yf": "GC=F", "mt5": "XAUUSD"},
@@ -38,7 +37,7 @@ def resolve_asset(asset_name: str):
 def get_mt5_account_balance() -> str:
     """جلب رصيد الحساب الحقيقي، السيولة (Equity)، والمارجين مباشرة من منصة MT5 عبر السحابة."""
     if not metaapi_token or not metaapi_account_id:
-        return "⚠️ مفاتيح MetaApi غير مضافة في الأسرار (Secrets)."
+        return "⚠️ مفاتيح MetaApi غير مضافة في الأسرار أو تحتوي على بيانات فارغة."
     
     url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{metaapi_account_id}/account-information"
     headers = {"auth-token": metaapi_token}
@@ -55,7 +54,7 @@ def get_mt5_account_balance() -> str:
 - العملة الأساسية: {data.get('currency', 'USD')}
 """
         else:
-            return f"فشل في جلب معلومات الحساب من السحابة: {res.text}"
+            return f"⚠️ فشل الاتصال بخادم MetaApi (تأكد من صحة الـ Token و Account ID): {res.text}"
     except Exception as e:
         return f"خطأ في الاتصال بالخادم: {str(e)}"
 
@@ -96,7 +95,6 @@ def analyze_and_execute_autonomous_trade(timeframe: str, asset_name: str, lot_si
         action_type = None
         action_desc = ""
         
-        # استراتيجية الذكاء الاصطناعي للتداول الذاتي
         if current_rsi < 36 or (current_price > sma_20 and current_rsi < 55):
             action_type = "ORDER_TYPE_BUY"
             action_desc = "شراء (BUY)"
@@ -110,7 +108,6 @@ def analyze_and_execute_autonomous_trade(timeframe: str, asset_name: str, lot_si
 - مؤشر RSI: {current_rsi:.1f} (منطقة حيادية، البوت ينتظر الفرصة الأنسب).
 """
 
-        # تنفيذ الصفقة تلقائياً على MT5 عبر MetaApi
         if metaapi_token and metaapi_account_id and action_type:
             url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{metaapi_account_id}/trade"
             headers = {"auth-token": metaapi_token, "Content-Type": "application/json"}
@@ -128,44 +125,50 @@ def analyze_and_execute_autonomous_trade(timeframe: str, asset_name: str, lot_si
 - نوع الصفقة: {action_desc}
 - حجم العقد (Lot): {lot_size}
 - السعر الحالي عند التنفيذ: ${current_price:.2f} | مؤشر RSI: {current_rsi:.1f}
-- حالة السحابة: تم إرسال الأمر بنجاح إلى منصة MetaTrader 5.
 """
             else:
                 return f"⚠️ فشل تنفيذ الصفقة على MT5: {res.text}"
         else:
-            return f"الإشارة المقترحة هي {action_desc} ولكن مفاتيح MetaApi غير مكتملة."
+            return f"الإشارة المقترحة هي {action_desc} ولكن بيانات MetaApi غير مكتملة."
             
     except Exception as e:
         return f"خطأ في التشغيل الآلي للتحليل: {str(e)}"
 
 tools = [get_mt5_account_balance, analyze_and_execute_autonomous_trade]
 
-api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
+api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت نظام تداول آلي سحابي خبير بأسواق الفوركس والذهب والأسهم عبر MetaTrader 5. تقرأ أرصدة الحسابات وتنفذ الصفقات ذاتياً بناءً على مؤشرات السوق."
+    system_instruction="أنت نظام تداول آلي سحابي خبير بأسواق الفوركس والذهب عبر MetaTrader 5."
 )
 agent_executor = create_agent(llm, tools)
 
 st.title("🤖 الوكيل المالي الذكي - التداول الآلي على MT5")
-st.write("فحص الرصيد، تحليل الشموع، وتنفيذ الصفقات ذاتياً عبر السحابة بدون الحاجة لأي لابتوب.")
+st.write("فحص الرصيد، تحليل الشموع، وتنفيذ الصفقات ذاتياً عبر السحابة.")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: افحص رصيدي في MT5، أو فعل تداول ذاتي للذهب بشمعة الـ 5 دقائق بلوت 0.01):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: افحص رصيدي في MT5):", placeholder="اكتب أمرك هنا...")
 
 if st.button("🚀 تنفيذ عبر السحابة", type="primary"):
     if user_input:
-        with st.spinner("البوت يتصل بسحابة MT5، يفحص الرصيد أو الشموع، ويتخذ القرار..."):
-            res = agent_executor.invoke({"messages": [("user", user_input)]})
-            ans = res["messages"][-1].content
+        with st.spinner("البوت يتصل بسحابة MT5 ويتخذ القرار..."):
+            try:
+                res = agent_executor.invoke({"messages": [("user", user_input)]})
+                ans = res["messages"][-1].content
+            except Exception as e:
+                ans = f"حدث خطأ أثناء تنفيذ الطلب: {str(e)}"
             
             st.success("🤖 تقرير التنفيذ السحابي:")
             st.write(ans)
             
-            # الرد الصوتي
-            audio_file = "ans.mp3"
-            gTTS(text=ans, lang="ar").save(audio_file)
-            st.audio(audio_file)
+            # توليد الصوت بشكل آمن يحمي من توقف التطبيق
+            try:
+                if ans and isinstance(ans, str) and len(ans.strip()) > 0:
+                    audio_file = "ans.mp3"
+                    gTTS(text=ans, lang="ar").save(audio_file)
+                    st.audio(audio_file)
+            except Exception:
+                pass # تخطي توليد الصوت في حال حدوث أي استثناء لكي لا يتعطل التطبيق
     else:
         st.warning("الرجاء كتابة أمر أولاً.")
