@@ -4,3 +4,6 @@ langchain-google-genai
 langchain
 yfinance
 matplotlib
+pandas
+numpy
+ccxt
