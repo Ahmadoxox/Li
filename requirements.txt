@@ -1,0 +1,6 @@
+streamlit
+gTTS
+langchain-google-genai
+langchain
+yfinance
+matplotlib
