@@ -103,7 +103,7 @@ def manage_trailing_stops() -> str:
         for p in positions:
             pos_id = p.get('id')
             symbol = p.get('symbol', '')
-            pos_type = p.get('type') # POSITION_TYPE_BUY or POSITION_TYPE_SELL
+            pos_type = p.get('type')
             open_price = float(p.get('openPrice', 0))
             current_price = float(p.get('currentPrice', 0))
             current_sl = float(p.get('stopLoss', 0))
@@ -116,7 +116,6 @@ def manage_trailing_stops() -> str:
             is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
             is_crypto = "BTC" in symbol.upper()
             
-            # منطق تتبع السعر المتحرك ورفع الستوب لوز لحجز الأرباح
             if pos_type == 'POSITION_TYPE_BUY':
                 if is_gold:
                     if (current_price - open_price) >= 3.0:
@@ -128,7 +127,7 @@ def manage_trailing_stops() -> str:
                         potential_sl = round(current_price - 100.0, 2)
                         if potential_sl > current_sl:
                             new_sl = potential_sl
-                else: # Forex
+                else:
                     if (current_price - open_price) >= 0.0020:
                         decimals = 5 if "JPY" not in symbol else 3
                         potential_sl = round(current_price - 0.0015, decimals)
@@ -146,7 +145,7 @@ def manage_trailing_stops() -> str:
                         potential_sl = round(current_price + 100.0, 2)
                         if current_sl == 0 or potential_sl < current_sl:
                             new_sl = potential_sl
-                else: # Forex
+                else:
                     if (open_price - current_price) >= 0.0020:
                         decimals = 5 if "JPY" not in symbol else 3
                         potential_sl = round(current_price + 0.0015, decimals)
@@ -364,18 +363,18 @@ api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت مدير محفظة مؤسسي ذكي وخبير في إدارة المخاطر. تطبق آليات الحماية المؤسسية (منع تكرار الصفقات، فلاتر السيولة والجلسات، إدارة التراجع والحد اليومي للخسارة، التحليل الفني والأساسي المدمج، اللوت الديناميكي، وإدارة وقف الخسارة المتحرك Trailing Stop). تنفذ الأوامر وتجيب باحترافية."
+    system_instruction="أنت مدير محفظة مؤسسي ذكي وخبير في إدارة المخاطر. تطبق آليات الحماية المؤسسية (منع تكرار الصفقات، فلاتر السيولة والجلسات، إدارة التراجع والحد اليومي للخسارة، التحليل الفني والأساسي المدمج، اللوت الديناميكي، ووقف الخسارة المتحرك Trailing Stop). تنفذ الأوامر وتجيب باحترافية."
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🛡️🤖 الوكيل المالي المؤسسي - الترايلينج ستاپ والحماية القصوى على MT5")
-st.write("إدارة الحساب، فحص الصفقات، تفعيل وقف الخسارة المتحرك (Trailing Stop)، جلب الأخبار، فلاتر الحماية، ومسح الأسواق.")
+st.title("🛡️🤖 الوكيل المالي المؤسسي - نسخة الحماية والترايلينج ستاپ على MT5")
+st.write("إدارة الحساب، تفعيل وقف الخسارة المتحرك، جلب الأخبار، فلاتر الحماية، ومسح الأسواق الذكي.")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: افحص الصفقات المفتوحة وفعل وقف الخسارة المتحرك لحجز الأرباح):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: افحص الصفقات وفعل وقف الخسارة المتحرك، أو امسح الأسواق وافتح الفرص):", placeholder="اكتب أمرك هنا...")
 
 if st.button("🚀 تشغيل البوت المؤسسي الآلي", type="primary"):
     if user_input:
-        with st.spinner("جاري تنفيذ الطلب وتطبيق أدوات الحماية وإدارة الأرباح..."):
+        with st.spinner("جاري تنفيذ الطلب وتطبيق أداة الترايلينج ستاپ وفحص الأسواق..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
