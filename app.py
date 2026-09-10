@@ -14,9 +14,16 @@ import yfinance as yf
 # إعدادات واجهة التطبيق
 st.set_page_config(page_title="الوكيل المالي - التداول الآلي على MT5", page_icon="🤖", layout="wide")
 
-# جلب أسرار السحابة مع إزالة أي مسافات زائدة تلقائياً (.strip())
+# جلب الأسرار وإزالة أي مسافات زائدة
 metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", "")).strip()
 metaapi_account_id = st.secrets.get("METAAPI_ACCOUNT_ID", os.environ.get("METAAPI_ACCOUNT_ID", "")).strip()
+metaapi_region = st.secrets.get("METAAPI_REGION", "london").strip().lower()
+
+# ضبط رابط الخادم بناءً على منطقة الحساب (لندن)
+if "london" in metaapi_region:
+    API_BASE_URL = "https://mt-client-api-v1.london.agiliumtrade.ai"
+else:
+    API_BASE_URL = f"https://mt-client-api-v1.{metaapi_region}.agiliumtrade.ai"
 
 ASSET_MAP = {
     "ذهب": {"yf": "GC=F", "mt5": "XAUUSD"},
@@ -35,18 +42,18 @@ def resolve_asset(asset_name: str):
 
 @tool
 def get_mt5_account_balance() -> str:
-    """جلب رصيد الحساب الحقيقي، السيولة (Equity)، والمارجين مباشرة من منصة MT5 عبر السحابة."""
+    """جلب رصيد الحساب الحقيقي، السيولة (Equity)، والمارجين مباشرة من منصة MT5 عبر سحابة لندن."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة في الأسرار أو تحتوي على بيانات فارغة."
     
-    url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{metaapi_account_id}/account-information"
+    url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
     headers = {"auth-token": metaapi_token}
     
     try:
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=15)
         if res.status_code == 200:
             data = res.json()
-            return f"""📊 معلومات رصيد حسابك على MT5:
+            return f"""📊 معلومات رصيد حسابك الحقيقي على MT5 (سحابة لندن):
 - الرصيد (Balance): ${data.get('balance', 0):.2f}
 - السيولة المتاحة (Equity): ${data.get('equity', 0):.2f}
 - الهامش المجاني (Free Margin): ${data.get('freeMargin', 0):.2f}
@@ -54,15 +61,15 @@ def get_mt5_account_balance() -> str:
 - العملة الأساسية: {data.get('currency', 'USD')}
 """
         else:
-            return f"⚠️ فشل الاتصال بخادم MetaApi (تأكد من صحة الـ Token و Account ID): {res.text}"
+            return f"⚠️ فشل الاتصال بخادم لندن (رمز الاستجابة {res.status_code}): {res.text}"
     except Exception as e:
-        return f"خطأ في الاتصال بالخادم: {str(e)}"
+        return f"خطأ في الاتصال بالخادم الإقليمي: {str(e)}"
 
 @tool
 def analyze_and_execute_autonomous_trade(timeframe: str, asset_name: str, lot_size: float) -> str:
     """
     يفحص السوق والشموع (مثل 1m, 5m, 1h) باستخدام مؤشر RSI والمتوسطات المتحركة، 
-    وإذا تطابقت الشروط الإيجابية، ينفذ صفقة حقيقية (شراء أو بيع) تلقائياً على MT5 عبر سحابة MetaApi.
+    وينفذ صفقة حقيقية تلقائياً على MT5 عبر سحابة لندن.
     """
     symbols = resolve_asset(asset_name)
     yf_symbol = symbols["yf"]
@@ -105,11 +112,11 @@ def analyze_and_execute_autonomous_trade(timeframe: str, asset_name: str, lot_si
             return f"""⏸️ وضع المراقبة الآلية (لا توجد صفقة الآن):
 - الأصل: {asset_name} ({mt5_symbol})
 - السعر الحالي: ${current_price:.2f}
-- مؤشر RSI: {current_rsi:.1f} (منطقة حيادية، البوت ينتظر الفرصة الأنسب).
+- مؤشر RSI: {current_rsi:.1f} (منطقة حيادية).
 """
 
         if metaapi_token and metaapi_account_id and action_type:
-            url = f"https://mt-client-api-v1.agiliumtrade.ai/users/current/accounts/{metaapi_account_id}/trade"
+            url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
             headers = {"auth-token": metaapi_token, "Content-Type": "application/json"}
             payload = {
                 "actionType": action_type,
@@ -120,16 +127,16 @@ def analyze_and_execute_autonomous_trade(timeframe: str, asset_name: str, lot_si
             
             res = requests.post(url, json=payload, headers=headers, timeout=15)
             if res.status_code in [200, 201]:
-                return f"""🚀 تم تنفيذ الصفقة الآلية بنجاح على MT5!
+                return f"""🚀 تم تنفيذ الصفقة الآلية بنجاح على MT5 (سحابة لندن)!
 - الأصل: {asset_name} ({mt5_symbol})
 - نوع الصفقة: {action_desc}
 - حجم العقد (Lot): {lot_size}
-- السعر الحالي عند التنفيذ: ${current_price:.2f} | مؤشر RSI: {current_rsi:.1f}
+- السعر الحالي: ${current_price:.2f} | مؤشر RSI: {current_rsi:.1f}
 """
             else:
-                return f"⚠️ فشل تنفيذ الصفقة على MT5: {res.text}"
+                return f"⚠️ فشل تنفيذ الصفقة: {res.text}"
         else:
-            return f"الإشارة المقترحة هي {action_desc} ولكن بيانات MetaApi غير مكتملة."
+            return f"الإشارة المقترحة هي {action_desc} ولكن البيانات غير مكتملة."
             
     except Exception as e:
         return f"خطأ في التشغيل الآلي للتحليل: {str(e)}"
@@ -145,14 +152,14 @@ llm = ChatGoogleGenerativeAI(
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🤖 الوكيل المالي الذكي - التداول الآلي على MT5")
-st.write("فحص الرصيد، تحليل الشموع، وتنفيذ الصفقات ذاتياً عبر السحابة.")
+st.title("🤖 الوكيل المالي الذكي - التداول الآلي على MT5 (لندن)")
+st.write("فحص الرصيد، تحليل الشموع، وتنفيذ الصفقات ذاتياً عبر سحابة لندن.")
 
 user_input = st.text_input("💬 اطلب من البوت (مثال: افحص رصيدي في MT5):", placeholder="اكتب أمرك هنا...")
 
 if st.button("🚀 تنفيذ عبر السحابة", type="primary"):
     if user_input:
-        with st.spinner("البوت يتصل بسحابة MT5 ويتخذ القرار..."):
+        with st.spinner("البوت يتصل بسحابة لندن لـ MT5..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
@@ -162,13 +169,12 @@ if st.button("🚀 تنفيذ عبر السحابة", type="primary"):
             st.success("🤖 تقرير التنفيذ السحابي:")
             st.write(ans)
             
-            # توليد الصوت بشكل آمن يحمي من توقف التطبيق
             try:
                 if ans and isinstance(ans, str) and len(ans.strip()) > 0:
                     audio_file = "ans.mp3"
                     gTTS(text=ans, lang="ar").save(audio_file)
                     st.audio(audio_file)
             except Exception:
-                pass # تخطي توليد الصوت في حال حدوث أي استثناء لكي لا يتعطل التطبيق
+                pass
     else:
         st.warning("الرجاء كتابة أمر أولاً.")
