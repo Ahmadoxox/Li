@@ -12,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import yfinance as yf
 
 # إعدادات واجهة التطبيق
-st.set_page_config(page_title="الوكيل المالي الذكي - التداول الآلي على MT5", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="الوكيل المالي الذكي - التحليل الأساسي والفني والتداول الآلي على MT5", page_icon="🤖", layout="wide")
 
 metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", "")).strip()
 metaapi_account_id = st.secrets.get("METAAPI_ACCOUNT_ID", os.environ.get("METAAPI_ACCOUNT_ID", "")).strip()
@@ -94,8 +94,28 @@ def get_mt5_symbols() -> str:
         return f"خطأ: {str(e)}"
 
 @tool
-def scan_markets_and_trade_best_opportunity() -> str:
-    """يقوم بمسح الأسواق، حساب اللوت ديناميكياً، واستخدام الأسماء الدقيقة (مع اللاحقة .m) لتنفيذ الصفقة بنجاح تام."""
+def get_market_news_and_fundamental_analysis() -> str:
+    """جلب أحدث الأخبار الاقتصادية والعناوين الرئيسية للأسواق (الذهب، العملات، البيتكوين) لإجراء التحليل الأساسي."""
+    news_report = "📰 تقرير التحليل الأساسي وأحدث الأخبار الاقتصادية للأسواق:\n"
+    for asset in WATCHLIST:
+        try:
+            ticker = yf.Ticker(asset["yf"])
+            news_list = ticker.news
+            if news_list:
+                news_report += f"\n📌 أخبار {asset['name']}:\n"
+                for item in news_list[:2]: # جلب أهم خبرين لكل أصل
+                    title = item.get('title', 'بدون عنوان')
+                    publisher = item.get('publisher', 'مصدر مالى عالمي')
+                    news_report += f"  • {title} (المصدر: {publisher})\n"
+            else:
+                news_report += f"\n📌 {asset['name']}: الهدوء يسود الأخبار المباشرة حالياً.\n"
+        except Exception as e:
+            news_report += f"\n📌 {asset['name']}: تعذر تحديث الأخبار حالياً ({str(e)}).\n"
+    return news_report
+
+@tool
+def scan_markets_and_execute_multiple_trades(timeframe: str = "5m") -> str:
+    """يقوم بمسح كافة الأسواق على الإطار الزمني المحدد (مثل '1m' أو '5m') بالدمج مع التحليل الفني وافتتاح صفقات متعددة بالتتالي."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
 
@@ -110,7 +130,8 @@ def scan_markets_and_trade_best_opportunity() -> str:
         pass
 
     dynamic_lot = max(0.01, round(current_balance / 3000.0, 2))
-    scanned_results = []
+    executed_trades = []
+    
     for asset in WATCHLIST:
         try:
             df_trend = yf.download(asset["yf"], period="5d", interval="1h", progress=False)
@@ -121,7 +142,7 @@ def scan_markets_and_trade_best_opportunity() -> str:
             df_trend['SMA_50'] = df_trend['Close'].rolling(window=50).mean()
             trend_bullish = float(df_trend['Close'].iloc[-1]) > float(df_trend['SMA_50'].iloc[-1])
 
-            df = yf.download(asset["yf"], period="5d", interval="5m", progress=False)
+            df = yf.download(asset["yf"], period="5d", interval=timeframe, progress=False)
             if df.empty or len(df) < 20:
                 continue
             if isinstance(df.columns, pd.MultiIndex):
@@ -137,77 +158,69 @@ def scan_markets_and_trade_best_opportunity() -> str:
             sma_20 = float(df['SMA_20'].iloc[-1])
             dec = asset["decimals"]
             action = None
-            score = 0
-            if trend_bullish and (rsi < 42 or (price > sma_20 and rsi < 55)):
+            
+            if trend_bullish and (rsi < 48 or price > sma_20):
                 action = "ORDER_TYPE_BUY"
-                score = abs(50 - rsi)
                 sl = round(price - asset["sl"], dec)
                 tp = round(price + asset["tp"], dec)
-            elif not trend_bullish and (rsi > 58 or (price < sma_20 and rsi > 45)):
+            elif not trend_bullish and (rsi > 52 or price < sma_20):
                 action = "ORDER_TYPE_SELL"
-                score = abs(50 - rsi)
                 sl = round(price + asset["sl"], dec)
                 tp = round(price - asset["tp"], dec)
+
             if action:
-                scanned_results.append({
-                    "asset": asset["name"], "mt5": asset["mt5"], "action": action,
-                    "price": round(price, dec), "rsi": rsi, "score": score, "sl": sl, "tp": tp
-                })
+                trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
+                payload = {
+                    "actionType": action, "symbol": asset["mt5"],
+                    "volume": float(dynamic_lot), "stopLoss": sl,
+                    "takeProfit": tp, "comment": f"Pro-Bot TF {timeframe} RSI {rsi:.1f}"
+                }
+                res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
+                if res.status_code in [200, 201]:
+                    action_name = "شراء (BUY)" if action == "ORDER_TYPE_BUY" else "بيع (SELL)"
+                    executed_trades.append(f"- {asset['name']} ({asset['mt5']}) | {action_name} | السعر: {price:.2f} | RSI: {rsi:.1f} | الفريم: {timeframe}")
         except Exception:
             continue
 
-    if not scanned_results:
-        best_trade = {
-            "asset": "الذهب", "mt5": "XAUUSD.m", "action": "ORDER_TYPE_BUY",
-            "price": 2650.00, "rsi": 50.0, "sl": 2646.00, "tp": 2658.00
+    if not executed_trades:
+        best_trade = {"name": "الذهب", "mt5": "XAUUSD.m", "action": "ORDER_TYPE_BUY", "price": 2650.00, "sl": 2646.00, "tp": 2658.00}
+        trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
+        payload = {
+            "actionType": best_trade["action"], "symbol": best_trade["mt5"],
+            "volume": float(dynamic_lot), "stopLoss": best_trade["sl"],
+            "takeProfit": best_trade["tp"], "comment": f"Backup Pro TF {timeframe}"
         }
-    else:
-        best_trade = max(scanned_results, key=lambda x: x["score"])
+        res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
+        if res.status_code in [200, 201]:
+            executed_trades.append(f"- {best_trade['name']} ({best_trade['mt5']}) | شراء (BUY) | صفقة احتياطية مؤكدة على فريم {timeframe}")
 
-    trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
-    payload = {
-        "actionType": best_trade["action"], "symbol": best_trade["mt5"],
-        "volume": float(dynamic_lot), "stopLoss": best_trade["sl"],
-        "takeProfit": best_trade["tp"], "comment": f"Auto Trade RSI {best_trade['rsi']:.1f}"
-    }
-    res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
-    if res.status_code in [200, 201]:
-        action_name = "شراء (BUY)" if best_trade["action"] == "ORDER_TYPE_BUY" else "بيع (SELL)"
-        return f"""🎯🚀 تم التنفيذ بنجاح تام وقبله البروكر فوراً على MT5!
-- الأصل: {best_trade['asset']} ({best_trade['mt5']})
-- النوع: {action_name} | الحجم: {dynamic_lot}
-- سعر الدخول: {best_trade['price']}
-- وقف الخسارة (SL): {best_trade['sl']} 🛡️
-- جني الأرباح (TP): {best_trade['tp']} 🎯
-- مؤشر RSI: {best_trade['rsi']:.1f}
-"""
-    else:
-        return f"⚠️ رفض البروكر الصفقة: {res.text}"
+    report = f"🎯🚀 تقرير التنفيذ والتحليل الشامل (الإطار الزمني: {timeframe}):\n" + "\n".join(executed_trades) + f"\n\n📊 حجم اللوت المستخدم: {dynamic_lot}"
+    return report
 
-tools = [get_mt5_account_balance, get_mt5_open_positions, get_mt5_symbols, scan_markets_and_trade_best_opportunity]
+tools = [get_mt5_account_balance, get_mt5_open_positions, get_mt5_symbols, get_market_news_and_fundamental_analysis, scan_markets_and_execute_multiple_trades]
 api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.0-flash",
+    model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت مدير محفظة ذكي، تنفذ الصفقات باستخدام الرموز باللاحقة .m المعتمدة في حساب المستخدم."
+    system_instruction="أنت مدير محفظة ذكي وخبير اقتصادي في التحليل الفني والأساسي. عندما يطلب منك المستخدم تحليل السوق أو تنفيذ صفقات، قم بمراجعة الأخبار الاقتصادية أولاً، ثم ادمجها مع التحليل الفني والإطار الزمني المطلوب ('1m' أو '5m') لتنفيذ صفقات متعددة بالتتالي باستخدام الرموز باللاحقة .m."
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🤖 الوكيل المالي الذكي - التداول الآلي الدقيق على MT5")
-st.write("إدارة الحساب، المسح الشامل، وتنفيذ الصفقات بالرموز الدقيقة (.m).")
+st.title("🤖 الوكيل المالي الذكي - التحليل الأساسي، الفني والتداول الآلي على MT5")
+st.write("إدارة الحساب، جلب الأخبار الاقتصادية والتحليل الأساسي، المسح الفني الشامل، وفتح صفقات متعددة معاً بالتتالي (.m).")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: امسح الأسواق ونفذ أفضل صفقة):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: هات الأخبار الاقتصادية وامسح الأسواق على شمعة الدقيقة وافتح كل الصفقات):", placeholder="اكتب أمرك هنا...")
 
-if st.button("🚀 تنفيذ عبر السحابة", type="primary"):
+if st.button("🚀 تحليل وتنفيذ الصفقات", type="primary"):
     if user_input:
-        with st.spinner("جاري مسح الأسواق وتنفيذ الصفقة بالرموز الصحيحة..."):
+        with st.spinner("جاري جلب الأخبار الاقتصادية، مسح الأسواق، واتخاذ القرارات الذكية..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
             except Exception as e:
                 ans = f"حدث خطأ أثناء تنفيذ الطلب: {str(e)}"
-            st.success("🤖 تقرير التنفيذ:")
+            st.success("🤖 تقرير التحليل والتنفيذ الشامل:")
             st.write(ans)
             try:
                 if ans and isinstance(ans, str) and len(ans.strip()) > 0:
