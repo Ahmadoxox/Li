@@ -73,12 +73,104 @@ def get_mt5_open_positions() -> str:
                 return "📋 لا توجد أي صفقات مفتوحة حالياً على الحساب في منصة MT5."
             report = "📋 الصفقات المفتوحة حالياً (محمية بنظام الحماية الذكي):\n"
             for p in positions:
-                report += f"- الأصل: {p.get('symbol')} | النوع: {p.get('type')} | الحجم: {p.get('volume')} | سعر الدخول: {p.get('openPrice')} | الربح الحالي: ${p.get('profit', 0):.2f} | التعليق: {p.get('comment', 'N/A')}\n"
+                report += f"- الأصل: {p.get('symbol')} | النوع: {p.get('type')} | الحجم: {p.get('volume')} | سعر الدخول: {p.get('openPrice')} | السعر الحالي: {p.get('currentPrice')} | الستوب لوز: {p.get('stopLoss')} | الربح الحالي: ${p.get('profit', 0):.2f} | التعليق: {p.get('comment', 'N/A')}\n"
             return report
         else:
             return f"⚠️ فشل جلب الصفقات المفتوحة (رمز الاستجابة {res.status_code}): {res.text}"
     except Exception as e:
         return f"خطأ أثناء الاتصال لجلب الصفقات: {str(e)}"
+
+@tool
+def manage_trailing_stops() -> str:
+    """تفقد كافة الصفقات المفتوحة حالياً وتفعيل نظام وقف الخسارة المتحرك (Trailing Stop / Break-Even) لحماية الأرباح تلقائياً."""
+    if not metaapi_token or not metaapi_account_id:
+        return "⚠️ مفاتيح MetaApi غير مضافة."
+    
+    url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/positions"
+    headers = {"auth-token": metaapi_token}
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            return f"⚠️ فشل جلب الصفقات لتطبيق الترايلينج (رمز الاستجابة {res.status_code}): {res.text}"
+        
+        positions = res.json()
+        if not positions:
+            return "📋 لا توجد صفقات مفتوحة لتطبيق وقف الخسارة المتحرك عليها."
+        
+        modifications_report = []
+        trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
+
+        for p in positions:
+            pos_id = p.get('id')
+            symbol = p.get('symbol', '')
+            pos_type = p.get('type') # POSITION_TYPE_BUY or POSITION_TYPE_SELL
+            open_price = float(p.get('openPrice', 0))
+            current_price = float(p.get('currentPrice', 0))
+            current_sl = float(p.get('stopLoss', 0))
+            profit = float(p.get('profit', 0))
+            
+            if current_price == 0:
+                continue
+
+            new_sl = None
+            is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+            is_crypto = "BTC" in symbol.upper()
+            
+            # منطق تتبع السعر المتحرك ورفع الستوب لوز لحجز الأرباح
+            if pos_type == 'POSITION_TYPE_BUY':
+                if is_gold:
+                    if (current_price - open_price) >= 3.0:
+                        potential_sl = round(current_price - 3.0, 2)
+                        if potential_sl > current_sl:
+                            new_sl = potential_sl
+                elif is_crypto:
+                    if (current_price - open_price) >= 100.0:
+                        potential_sl = round(current_price - 100.0, 2)
+                        if potential_sl > current_sl:
+                            new_sl = potential_sl
+                else: # Forex
+                    if (current_price - open_price) >= 0.0020:
+                        decimals = 5 if "JPY" not in symbol else 3
+                        potential_sl = round(current_price - 0.0015, decimals)
+                        if potential_sl > current_sl:
+                            new_sl = potential_sl
+
+            elif pos_type == 'POSITION_TYPE_SELL':
+                if is_gold:
+                    if (open_price - current_price) >= 3.0:
+                        potential_sl = round(current_price + 3.0, 2)
+                        if current_sl == 0 or potential_sl < current_sl:
+                            new_sl = potential_sl
+                elif is_crypto:
+                    if (open_price - current_price) >= 100.0:
+                        potential_sl = round(current_price + 100.0, 2)
+                        if current_sl == 0 or potential_sl < current_sl:
+                            new_sl = potential_sl
+                else: # Forex
+                    if (open_price - current_price) >= 0.0020:
+                        decimals = 5 if "JPY" not in symbol else 3
+                        potential_sl = round(current_price + 0.0015, decimals)
+                        if current_sl == 0 or potential_sl < current_sl:
+                            new_sl = potential_sl
+
+            if new_sl is not None:
+                payload = {
+                    "actionType": "POSITION_MODIFY",
+                    "positionId": str(pos_id),
+                    "stopLoss": float(new_sl)
+                }
+                mod_res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
+                if mod_res.status_code in [200, 201]:
+                    modifications_report.append(f"✅ الأصل: {symbol} (ID: {pos_id}) | تم تحديث الستوب لوز المتحرك إلى: {new_sl} (الربح الحالي: ${profit:.2f})")
+                else:
+                    modifications_report.append(f"⚠️ فشل تحديث الأصل {symbol}: {mod_res.text}")
+
+        if not modifications_report:
+            return "ℹ️ تم تفقد الصفقات المفتوحة، ولا توجد صفقات حققت مسافة كافية لتفعيل الترايلينج ستاپ حالياً (الوضع آمن ومستقر)."
+        
+        return "🛡️ تقرير تفعيل وقف الخسارة المتحرك (Trailing Stop):\n" + "\n".join(modifications_report)
+    except Exception as e:
+        return f"خطأ أثناء إدارة وقف الخسارة المتحرك: {str(e)}"
 
 @tool
 def get_mt5_symbols() -> str:
@@ -122,13 +214,12 @@ def get_market_news_and_fundamental_analysis() -> str:
 
 @tool
 def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
-    """يقوم بالمسح الشامل وتطبيق آليات الحماية الخمس (منع تكرار الصفقات، فلتر السيولة والجلسات، فحص الحد الأقصى للخسارة، التحليل الفني والأساسي، وإدارة اللوت الديناميكي)."""
+    """يقوم بالمسح الشامل وتطبيق فلاتر الحماية (منع تكرار الصفقات، فلتر السيولة والجلسات، فحص الحد الأقصى للخسارة، التحليل الفني والأساسي، وإدارة اللوت الديناميكي)."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
 
     headers = {"auth-token": metaapi_token}
     
-    # 1. فحص حد الأمان اليومي للخسارة وسحب البيانات الحالية
     acc_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
     current_balance = 31.0
     current_equity = 31.0
@@ -141,17 +232,14 @@ def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
     except Exception:
         pass
 
-    # فلتر حد الأمان اليومي (إذا تجاوزت الخسارة 10% يوقف التنفيذ حماية للحساب)
     drawdown_amount = current_balance - current_equity
     if drawdown_amount > (current_balance * 0.10):
         return f"🛑 تم تفعيل نظام الأمان المؤسسي: تم إيقاف فتح صفقات جديدة نظراً لأن الخسارة اليومية بلغت (${drawdown_amount:.2f}) وهي تتجاوز حد الأمان (10%)."
 
-    # 2. فلتر أوقات الجلسات والسيولة (التحقق من أيام الإغلاق للأصول التقليدية)
     now_utc = datetime.utcnow()
-    weekday = now_utc.weekday() # 5 = السبت، 6 = الأحد
+    weekday = now_utc.weekday()
     is_weekend = (weekday >= 5)
 
-    # 3. جلب الصفقات المفتوحة حالياً لتطبيق حماية منع تكرار الصفقات (Duplicate Position Protection)
     pos_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/positions"
     active_symbols = set()
     try:
@@ -167,18 +255,15 @@ def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
     skipped_trades = []
 
     for asset in WATCHLIST:
-        # إذا كان السوق مغلقاً لعطلة نهاية الأسبوع للأصول التقليدية (Forex/Gold)
         if is_weekend and asset["type"] == "forex":
             skipped_trades.append(f"- {asset['name']}: مغلق لعطلة نهاية الأسبوع.")
             continue
 
-        # حماية منع تكرار الصفقات: إذا كانت الصفقة مفتوحة مسبقاً لنفس الرمز، تخطاها
         if asset["mt5"] in active_symbols:
             skipped_trades.append(f"- {asset['name']} ({asset['mt5']}): توجد صفقة مفتوحة مسبقاً (تم منع التكرار).")
             continue
 
         try:
-            # التحقق من الترند العام (ساعة)
             df_trend = yf.download(asset["yf"], period="5d", interval="1h", progress=False)
             if df_trend.empty:
                 continue
@@ -187,7 +272,6 @@ def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
             df_trend['SMA_50'] = df_trend['Close'].rolling(window=50).mean()
             trend_bullish = float(df_trend['Close'].iloc[-1]) > float(df_trend['SMA_50'].iloc[-1])
 
-            # التحقق الفني اللحظي (RSI + SMA) على الفريم المطلوب
             df = yf.download(asset["yf"], period="5d", interval=timeframe, progress=False)
             if df.empty or len(df) < 20:
                 continue
@@ -230,11 +314,9 @@ def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
             continue
 
     if not executed_trades and not skipped_trades:
-        # صفقة احتياطية مؤكدة في حال عدم توفر إشارة قوية لحظية
         if not is_weekend:
             best_trade = {"name": "الذهب", "mt5": "XAUUSD.m", "action": "ORDER_TYPE_BUY", "sl_val": 4.0, "tp_val": 8.0}
             try:
-                # جلب السعر الحالي للذهب لتحديد SL و TP بدقة
                 df_gold = yf.download("GC=F", period="1d", interval="1m", progress=False)
                 if not df_gold.empty:
                     if isinstance(df_gold.columns, pd.MultiIndex):
@@ -268,24 +350,32 @@ def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
     report += f"\n📊 حجم اللوت المستخدم: {dynamic_lot} | الإطار الزمني: {timeframe}"
     return report
 
-tools = [get_mt5_account_balance, get_mt5_open_positions, get_mt5_symbols, get_market_news_and_fundamental_analysis, scan_markets_and_execute_smart_trades]
+tools = [
+    get_mt5_account_balance, 
+    get_mt5_open_positions, 
+    manage_trailing_stops, 
+    get_mt5_symbols, 
+    get_market_news_and_fundamental_analysis, 
+    scan_markets_and_execute_smart_trades
+]
+
 api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت مدير محفظة مؤسسي ذكي وخبير في إدارة المخاطر. تطبق 5 آليات حماية صارمة (منع تكرار الصفقات، فلاتر السيولة والجلسات، إدارة التراجع والحد اليومي للخسارة، التحليل الفني والأساسي المدمج، واللوت الديناميكي). تنفذ الأوامر وتجيب باحترافية."
+    system_instruction="أنت مدير محفظة مؤسسي ذكي وخبير في إدارة المخاطر. تطبق آليات الحماية المؤسسية (منع تكرار الصفقات، فلاتر السيولة والجلسات، إدارة التراجع والحد اليومي للخسارة، التحليل الفني والأساسي المدمج، اللوت الديناميكي، وإدارة وقف الخسارة المتحرك Trailing Stop). تنفذ الأوامر وتجيب باحترافية."
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🛡️🤖 الوكيل المالي المؤسسي - الحماية القصوى والتحليل الشامل على MT5")
-st.write("إدارة الحساب، جلب الأخبار، فلاتر الحماية المتقدمة (منع التكرار، حد الخسارة اليومي، الجلسات)، مسح الأسواق، وفتح صفقات متعددة بالتتالي (.m).")
+st.title("🛡️🤖 الوكيل المالي المؤسسي - الترايلينج ستاپ والحماية القصوى على MT5")
+st.write("إدارة الحساب، فحص الصفقات، تفعيل وقف الخسارة المتحرك (Trailing Stop)، جلب الأخبار، فلاتر الحماية، ومسح الأسواق.")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: افحص الحساب وجلب الأخبار وامسح الأسواق على شمعة الدقيقة وافتح الفرص المتاحة):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: افحص الصفقات المفتوحة وفعل وقف الخسارة المتحرك لحجز الأرباح):", placeholder="اكتب أمرك هنا...")
 
 if st.button("🚀 تشغيل البوت المؤسسي الآلي", type="primary"):
     if user_input:
-        with st.spinner("جاري تطبيق فلاتر الحماية المؤسسية، جلب الأخبار، ومسح الأسواق..."):
+        with st.spinner("جاري تنفيذ الطلب وتطبيق أدوات الحماية وإدارة الأرباح..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
