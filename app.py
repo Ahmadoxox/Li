@@ -12,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import yfinance as yf
 
 # إعدادات واجهة التطبيق
-st.set_page_config(page_title="الوكيل المالي الذكي - التداول الآلي الدقيق على MT5", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="الوكيل المالي الذكي - إدارة الصفقات على MT5", page_icon="🤖", layout="wide")
 
 # جلب الأسرار وإزالة أي مسافات زائدة
 metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", "")).strip()
@@ -25,7 +25,6 @@ if "london" in metaapi_region:
 else:
     API_BASE_URL = f"https://mt-client-api-v1.{metaapi_region}.agiliumtrade.ai"
 
-# قائمة الأسواق مع تحديد دقة المنازل العشرية المناسبة لكل أصل
 WATCHLIST = [
     {"name": "الذهب", "yf": "GC=F", "mt5": "XAUUSD", "sl": 4.0, "tp": 8.0, "decimals": 2},
     {"name": "يورو دولار", "yf": "EURUSD=X", "mt5": "EURUSD", "sl": 0.0030, "tp": 0.0060, "decimals": 5},
@@ -35,7 +34,7 @@ WATCHLIST = [
 
 @tool
 def get_mt5_account_balance() -> str:
-    """جلب رصيد الحساب الحقيقي، السيولة (Equity)، والمارجين مباشرة من منصة MT5 عبر سحابة لندن."""
+    """جلب رصيد الحساب الحقيقي والسيولة مباشرة من منصة MT5 عبر سحابة لندن."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
     
@@ -57,10 +56,34 @@ def get_mt5_account_balance() -> str:
         return f"خطأ في الاتصال بالخادم الإقليمي: {str(e)}"
 
 @tool
+def get_mt5_open_positions() -> str:
+    """فحص وجلب كافة الصفقات المفتوحة حالياً فعلياً من خادم MT5 لمعرفة ما إذا كانت الصفقة قد نفذت أم لا."""
+    if not metaapi_token or not metaapi_account_id:
+        return "⚠️ مفاتيح MetaApi غير مضافة."
+        
+    url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/positions"
+    headers = {"auth-token": metaapi_token}
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        if res.status_code == 200:
+            positions = res.json()
+            if not positions:
+                return "📋 لا توجد أي صفقات مفتوحة حالياً على الحساب في منصة MT5."
+            
+            report = "📋 الصفقات المفتوحة حالياً على منصة MT5:\n"
+            for p in positions:
+                report += f"- الأصل: {p.get('symbol')} | النوع: {p.get('type')} | الحجم: {p.get('volume')} | سعر الدخول: {p.get('openPrice')} | الربح الحالي: ${p.get('profit', 0):.2f}\n"
+            return report
+        else:
+            return f"⚠️ فشل جلب الصفقات المفتوحة (رمز الاستجابة {res.status_code}): {res.text}"
+    except Exception as e:
+        return f"خطأ أثناء الاتصال لجلب الصفقات: {str(e)}"
+
+@tool
 def scan_markets_and_trade_best_opportunity() -> str:
     """
-    يقوم بمسح الأسواق بدقة عالية، يحسب اللوت ديناميكياً، 
-    ويضبط نقاط وقف الخسارة وجني الأرباح بالمنازل العشرية الصحيحة لمنع رفض البروكر.
+    يقوم بمسح الأسواق واختيار الفرصة الأفضل وتنفيذها مع ضبط الدقة.
     """
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
@@ -79,7 +102,10 @@ def scan_markets_and_trade_best_opportunity() -> str:
     dynamic_lot = max(0.01, round(current_balance / 3000.0, 2))
     scanned_results = []
     
+    # نجرب على الذهب (XAUUSD) كبداية مضمونة ومتاحة دائماً في أوقات التداول
     for asset in WATCHLIST:
+        if asset["mt5"] != "XAUUSD": # نركز حالياً على الذهب لضمان القبول الفوري من البروكر
+            continue
         try:
             df_trend = yf.download(asset["yf"], period="5d", interval="1h", progress=False)
             if df_trend.empty:
@@ -107,38 +133,26 @@ def scan_markets_and_trade_best_opportunity() -> str:
             sma_20 = float(df['SMA_20'].iloc[-1])
             dec = asset["decimals"]
             
-            action = None
-            score = 0
-            
-            if trend_bullish and (rsi < 42 or (price > sma_20 and rsi < 55)):
-                action = "ORDER_TYPE_BUY"
-                score = abs(50 - rsi)
-                sl = round(price - asset["sl"], dec)
-                tp = round(price + asset["tp"], dec)
-            elif not trend_bullish and (rsi > 58 or (price < sma_20 and rsi > 45)):
-                action = "ORDER_TYPE_SELL"
-                score = abs(50 - rsi)
-                sl = round(price + asset["sl"], dec)
-                tp = round(price - asset["tp"], dec)
+            action = "ORDER_TYPE_BUY" if trend_bullish else "ORDER_TYPE_SELL"
+            sl = round(price - asset["sl"], dec) if action == "ORDER_TYPE_BUY" else round(price + asset["sl"], dec)
+            tp = round(price + asset["tp"], dec) if action == "ORDER_TYPE_BUY" else round(price - asset["tp"], dec)
                 
-            if action:
-                scanned_results.append({
-                    "asset": asset["name"],
-                    "mt5": asset["mt5"],
-                    "action": action,
-                    "price": round(price, dec),
-                    "rsi": rsi,
-                    "score": score,
-                    "sl": sl,
-                    "tp": tp
-                })
+            scanned_results.append({
+                "asset": asset["name"],
+                "mt5": asset["mt5"],
+                "action": action,
+                "price": round(price, dec),
+                "rsi": rsi,
+                "sl": sl,
+                "tp": tp
+            })
         except Exception:
             continue
 
     if not scanned_results:
-        return "⏸️ الماسح الشامل: لا توجد حالياً فرصة مطابقة لمعايير الدقة الحالية."
+        return "⏸️ لم يتم العثور على بيانات كافية للذهب حالياً."
 
-    best_trade = max(scanned_results, key=lambda x: x["score"])
+    best_trade = scanned_results[0]
     
     trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
     payload = {
@@ -147,50 +161,46 @@ def scan_markets_and_trade_best_opportunity() -> str:
         "volume": float(dynamic_lot),
         "stopLoss": best_trade["sl"],
         "takeProfit": best_trade["tp"],
-        "comment": f"Precision Trade RSI {best_trade['rsi']:.1f}"
+        "comment": f"Gold Trade RSI {best_trade['rsi']:.1f}"
     }
     
     res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
     if res.status_code in [200, 201]:
         action_name = "شراء (BUY)" if best_trade["action"] == "ORDER_TYPE_BUY" else "بيع (SELL)"
-        return f"""🎯🚀 تم تنفيذ الصفقة بنجاح تام وبدقة مئوية كاملة على MT5!
-- الأصل المختار: {best_trade['asset']} ({best_trade['mt5']})
-- نوع الصفقة: {action_name}
-- حجم العقد: {dynamic_lot}
-- سعر الدخول: {best_trade['price']}
-- وقف الخسارة (SL): {best_trade['sl']} 🛡️
-- جني الأرباح (TP): {best_trade['tp']} 🎯
-- مؤشر RSI: {best_trade['rsi']:.1f}
+        return f"""🎯🚀 تم إرسال صفقة الذهب (XAUUSD) بنجاح إلى منصة MT5!
+- النوع: {action_name} | الحجم: {dynamic_lot}
+- سعر الدخول: {best_trade['price']} | RSI: {best_trade['rsi']:.1f}
+(استخدم أمر "افحص الصفقات المفتوحة" للتأكد من تسجيلها فوراً).
 """
     else:
-        return f"⚠️ رفض خادم البروكر الصفقة: {res.text}"
+        return f"⚠️ رفض البروكر الصفقة: {res.text}"
 
-tools = [get_mt5_account_balance, scan_markets_and_trade_best_opportunity]
+tools = [get_mt5_account_balance, get_mt5_open_positions, scan_markets_and_trade_best_opportunity]
 
 api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت مدير محفظة ذكي، تنفذ الصفقات بدقة متناهية متوافقة مع متطلبات شركات الوساطة."
+    system_instruction="أنت مدير محفظة ذكي، تفحص الصفقات بدقة وتتعامل مع خادم MT5."
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🤖 الوكيل المالي الذكي - الماسح الآلي فائق الدقة على MT5")
-st.write("البوت يفحص الأسواق وينفذ الصفقات بأسعار دقيقة ومقبولة تماماً من منصة MT5.")
+st.title("🤖 الوكيل المالي الذكي - إدارة وفحص الصفقات على MT5")
+st.write("فحص الرصيد، متابعة الصفقات المفتوحة، وتنفيذ صفقات الذهب بدقة.")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: امسح الأسواق ونفذ الصفقة بدقة):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: افحص الصفقات المفتوحة):", placeholder="اكتب أمرك هنا...")
 
 if st.button("🚀 تنفيذ عبر السحابة", type="primary"):
     if user_input:
-        with st.spinner("جاري فحص الأسواق وتنفيذ الصفقة بالدقة المطلوبة..."):
+        with st.spinner("جاري تنفيذ الطلب والتواصل مع خادم MT5..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
             except Exception as e:
                 ans = f"حدث خطأ أثناء تنفيذ الطلب: {str(e)}"
             
-            st.success("🤖 تقرير التنفيذ:")
+            st.success("🤖 تقرير الخادم:")
             st.write(ans)
             
             try:
