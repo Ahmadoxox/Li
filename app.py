@@ -12,7 +12,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import yfinance as yf
 
 # إعدادات واجهة التطبيق
-st.set_page_config(page_title="الوكيل المالي الذكي - الماسح الآلي الذكي على MT5", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="الوكيل المالي الذكي - التداول الآلي الدقيق على MT5", page_icon="🤖", layout="wide")
 
 # جلب الأسرار وإزالة أي مسافات زائدة
 metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", "")).strip()
@@ -25,19 +25,19 @@ if "london" in metaapi_region:
 else:
     API_BASE_URL = f"https://mt-client-api-v1.{metaapi_region}.agiliumtrade.ai"
 
-# قائمة الأسواق المتاحة للمسح الذاتي
+# قائمة الأسواق مع تحديد دقة المنازل العشرية المناسبة لكل أصل
 WATCHLIST = [
-    {"name": "الذهب", "yf": "GC=F", "mt5": "XAUUSD", "sl": 4.0, "tp": 8.0},
-    {"name": "يورو دولار", "yf": "EURUSD=X", "mt5": "EURUSD", "sl": 0.0030, "tp": 0.0060},
-    {"name": "باوند دولار", "yf": "GBPUSD=X", "mt5": "GBPUSD", "sl": 0.0035, "tp": 0.0070},
-    {"name": "بيتكوين", "yf": "BTC-USD", "mt5": "BTCUSD", "sl": 150.0, "tp": 300.0}
+    {"name": "الذهب", "yf": "GC=F", "mt5": "XAUUSD", "sl": 4.0, "tp": 8.0, "decimals": 2},
+    {"name": "يورو دولار", "yf": "EURUSD=X", "mt5": "EURUSD", "sl": 0.0030, "tp": 0.0060, "decimals": 5},
+    {"name": "باوند دولار", "yf": "GBPUSD=X", "mt5": "GBPUSD", "sl": 0.0035, "tp": 0.0070, "decimals": 5},
+    {"name": "بيتكوين", "yf": "BTC-USD", "mt5": "BTCUSD", "sl": 150.0, "tp": 300.0, "decimals": 2}
 ]
 
 @tool
 def get_mt5_account_balance() -> str:
     """جلب رصيد الحساب الحقيقي، السيولة (Equity)، والمارجين مباشرة من منصة MT5 عبر سحابة لندن."""
     if not metaapi_token or not metaapi_account_id:
-        return "⚠️ مفاتيح MetaApi غير مضافة في الأسرار."
+        return "⚠️ مفاتيح MetaApi غير مضافة."
     
     url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
     headers = {"auth-token": metaapi_token}
@@ -59,17 +59,16 @@ def get_mt5_account_balance() -> str:
 @tool
 def scan_markets_and_trade_best_opportunity() -> str:
     """
-    يقوم بمسح عدة أسواق تلقائياً، يقرأ رصيد الحساب الحالي ليحدد حجم اللوت بذكاء،
-    ويبحث عن أفضل فرصة مع وقف خسارة وجني أرباح تلقائي.
+    يقوم بمسح الأسواق بدقة عالية، يحسب اللوت ديناميكياً، 
+    ويضبط نقاط وقف الخسارة وجني الأرباح بالمنازل العشرية الصحيحة لمنع رفض البروكر.
     """
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
 
-    # 1. جلب الرصيد الحقيقي لتحديد حجم اللوت بذكاء وتناسب مع الحساب
     acc_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
     headers = {"auth-token": metaapi_token}
     
-    current_balance = 31.0 # قيمة افتراضية احتياطية
+    current_balance = 31.0
     try:
         acc_res = requests.get(acc_url, headers=headers, timeout=10)
         if acc_res.status_code == 200:
@@ -77,10 +76,7 @@ def scan_markets_and_trade_best_opportunity() -> str:
     except Exception:
         pass
 
-    # حساب اللوت ديناميكياً: كلما زاد الرصيد، زادت حرية البوت بنسبة آمنة ومدروسة
-    # الحد الأدنى 0.01، ويزداد تلقائياً بزيادة الأرباح
     dynamic_lot = max(0.01, round(current_balance / 3000.0, 2))
-
     scanned_results = []
     
     for asset in WATCHLIST:
@@ -109,6 +105,7 @@ def scan_markets_and_trade_best_opportunity() -> str:
             price = float(df['Close'].iloc[-1])
             rsi = float(df['RSI'].iloc[-1])
             sma_20 = float(df['SMA_20'].iloc[-1])
+            dec = asset["decimals"]
             
             action = None
             score = 0
@@ -116,20 +113,20 @@ def scan_markets_and_trade_best_opportunity() -> str:
             if trend_bullish and (rsi < 42 or (price > sma_20 and rsi < 55)):
                 action = "ORDER_TYPE_BUY"
                 score = abs(50 - rsi)
-                sl = round(price - asset["sl"], 2)
-                tp = round(price + asset["tp"], 2)
+                sl = round(price - asset["sl"], dec)
+                tp = round(price + asset["tp"], dec)
             elif not trend_bullish and (rsi > 58 or (price < sma_20 and rsi > 45)):
                 action = "ORDER_TYPE_SELL"
                 score = abs(50 - rsi)
-                sl = round(price + asset["sl"], 2)
-                tp = round(price - asset["tp"], 2)
+                sl = round(price + asset["sl"], dec)
+                tp = round(price - asset["tp"], dec)
                 
             if action:
                 scanned_results.append({
                     "asset": asset["name"],
                     "mt5": asset["mt5"],
                     "action": action,
-                    "price": price,
+                    "price": round(price, dec),
                     "rsi": rsi,
                     "score": score,
                     "sl": sl,
@@ -139,11 +136,10 @@ def scan_markets_and_trade_best_opportunity() -> str:
             continue
 
     if not scanned_results:
-        return "⏸️ الماسح الشامل: تم فحص جميع الأسواق، ولا توجد حالياً فرصة قوية مطابقة للمعايير الذكية."
+        return "⏸️ الماسح الشامل: لا توجد حالياً فرصة مطابقة لمعايير الدقة الحالية."
 
     best_trade = max(scanned_results, key=lambda x: x["score"])
     
-    # تنفيذ الصفقة باللوت الديناميكي الذكي
     trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
     payload = {
         "actionType": best_trade["action"],
@@ -151,23 +147,23 @@ def scan_markets_and_trade_best_opportunity() -> str:
         "volume": float(dynamic_lot),
         "stopLoss": best_trade["sl"],
         "takeProfit": best_trade["tp"],
-        "comment": f"Dynamic AI Trade RSI {best_trade['rsi']:.1f}"
+        "comment": f"Precision Trade RSI {best_trade['rsi']:.1f}"
     }
     
     res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
     if res.status_code in [200, 201]:
         action_name = "شراء (BUY)" if best_trade["action"] == "ORDER_TYPE_BUY" else "بيع (SELL)"
-        return f"""🎯🚀 الماسح الذكي فحص الأسواق وحسب اللوت تلقائياً ونفذ الصفقة!
+        return f"""🎯🚀 تم تنفيذ الصفقة بنجاح تام وبدقة مئوية كاملة على MT5!
 - الأصل المختار: {best_trade['asset']} ({best_trade['mt5']})
 - نوع الصفقة: {action_name}
-- حجم العقد المحسوب ديناميكياً: {dynamic_lot} (بناءً على رصيدك ${current_balance:.2f})
-- سعر الدخول: ${best_trade['price']:.2f}
-- وقف الخسارة (SL): ${best_trade['sl']} 🛡️
-- جني الأرباح (TP): ${best_trade['tp']} 🎯
+- حجم العقد: {dynamic_lot}
+- سعر الدخول: {best_trade['price']}
+- وقف الخسارة (SL): {best_trade['sl']} 🛡️
+- جني الأرباح (TP): {best_trade['tp']} 🎯
 - مؤشر RSI: {best_trade['rsi']:.1f}
 """
     else:
-        return f"⚠️ تم العثور على فرصة ولكن فشل التنفيذ عبر الخادم: {res.text}"
+        return f"⚠️ رفض خادم البروكر الصفقة: {res.text}"
 
 tools = [get_mt5_account_balance, scan_markets_and_trade_best_opportunity]
 
@@ -176,25 +172,25 @@ api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت مدير محفظة ذكي وآلي بالكامل، تحسب المخاطر ديناميكياً وتختار الفرصة الأفضل بحكمة بالغة."
+    system_instruction="أنت مدير محفظة ذكي، تنفذ الصفقات بدقة متناهية متوافقة مع متطلبات شركات الوساطة."
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🤖 الوكيل المالي الذكي - الماسح الآلي الديناميكي على MT5")
-st.write("البوت يفحص الأسواق، يقرأ رصيدك لتحديد اللوت بذكاء، ويحمي الصفقة بوقف خسارة وجني أرباح تلقائي.")
+st.title("🤖 الوكيل المالي الذكي - الماسح الآلي فائق الدقة على MT5")
+st.write("البوت يفحص الأسواق وينفذ الصفقات بأسعار دقيقة ومقبولة تماماً من منصة MT5.")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: امسح الأسواق وابحث عن أفضل فرصة ونفذها):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: امسح الأسواق ونفذ الصفقة بدقة):", placeholder="اكتب أمرك هنا...")
 
 if st.button("🚀 تنفيذ عبر السحابة", type="primary"):
     if user_input:
-        with st.spinner("جاري قراءة الرصيد، فحص الأسواق، وحساب اللوت المناسب..."):
+        with st.spinner("جاري فحص الأسواق وتنفيذ الصفقة بالدقة المطلوبة..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
             except Exception as e:
                 ans = f"حدث خطأ أثناء تنفيذ الطلب: {str(e)}"
             
-            st.success("🤖 تقرير التنفيذ الديناميكي:")
+            st.success("🤖 تقرير التنفيذ:")
             st.write(ans)
             
             try:
