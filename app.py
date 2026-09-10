@@ -188,7 +188,7 @@ tools = [get_mt5_account_balance, get_mt5_open_positions, get_mt5_symbols, scan_
 api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash",
+    model="gemini-2.0-flash",
     google_api_key=api_key,
     system_instruction="أنت مدير محفظة ذكي، تنفذ الصفقات باستخدام الرموز باللاحقة .m المعتمدة في حساب المستخدم."
 )
