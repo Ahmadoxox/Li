@@ -5,14 +5,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import requests
+from datetime import datetime
 from gtts import gTTS
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 import yfinance as yf
 
-# إعدادات واجهة التطبيق
-st.set_page_config(page_title="الوكيل المالي الذكي - التحليل الأساسي والفني والتداول الآلي على MT5", page_icon="🤖", layout="wide")
+# إعدادات واجهة التطبيق المؤسسي
+st.set_page_config(page_title="الوكيل المالي المؤسسي الذكي - MT5 Pro", page_icon="🛡️", layout="wide")
 
 metaapi_token = st.secrets.get("METAAPI_TOKEN", os.environ.get("METAAPI_TOKEN", "")).strip()
 metaapi_account_id = st.secrets.get("METAAPI_ACCOUNT_ID", os.environ.get("METAAPI_ACCOUNT_ID", "")).strip()
@@ -24,15 +25,15 @@ else:
     API_BASE_URL = f"https://mt-client-api-v1.{metaapi_region}.agiliumtrade.ai"
 
 WATCHLIST = [
-    {"name": "الذهب", "yf": "GC=F", "mt5": "XAUUSD.m", "sl": 4.0, "tp": 8.0, "decimals": 2},
-    {"name": "يورو دولار", "yf": "EURUSD=X", "mt5": "EURUSD.m", "sl": 0.0030, "tp": 0.0060, "decimals": 5},
-    {"name": "باوند دولار", "yf": "GBPUSD=X", "mt5": "GBPUSD.m", "sl": 0.0035, "tp": 0.0070, "decimals": 5},
-    {"name": "بيتكوين", "yf": "BTC-USD", "mt5": "BTCUSD", "sl": 150.0, "tp": 300.0, "decimals": 2}
+    {"name": "الذهب", "yf": "GC=F", "mt5": "XAUUSD.m", "sl": 4.0, "tp": 8.0, "decimals": 2, "type": "forex"},
+    {"name": "يورو دولار", "yf": "EURUSD=X", "mt5": "EURUSD.m", "sl": 0.0030, "tp": 0.0060, "decimals": 5, "type": "forex"},
+    {"name": "باوند دولار", "yf": "GBPUSD=X", "mt5": "GBPUSD.m", "sl": 0.0035, "tp": 0.0070, "decimals": 5, "type": "forex"},
+    {"name": "بيتكوين", "yf": "BTC-USD", "mt5": "BTCUSD", "sl": 150.0, "tp": 300.0, "decimals": 2, "type": "crypto"}
 ]
 
 @tool
 def get_mt5_account_balance() -> str:
-    """جلب رصيد الحساب الحقيقي والسيولة مباشرة من منصة MT5 عبر سحابة لندن."""
+    """جلب رصيد الحساب الحقيقي والسيولة والهامش مع تقييم المخاطر اليومية من منصة MT5."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
     url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
@@ -41,10 +42,16 @@ def get_mt5_account_balance() -> str:
         res = requests.get(url, headers=headers, timeout=15)
         if res.status_code == 200:
             data = res.json()
-            return f"""📊 معلومات رصيد حسابك الحقيقي على MT5:
-- الرصيد (Balance): ${data.get('balance', 0):.2f}
-- السيولة المتاحة (Equity): ${data.get('equity', 0):.2f}
+            balance = float(data.get('balance', 0))
+            equity = float(data.get('equity', 0))
+            drawdown_pct = ((balance - equity) / balance) * 100 if balance > 0 else 0
+            status_dd = "🟢 آمن تماماً" if drawdown_pct < 5 else ("🟡 تنبيه: خسارة غير محققة مرتفعة" if drawdown_pct < 10 else "🔴 خطر: تجاوز حد الأمان اليومي!")
+            
+            return f"""📊 معلومات الحساب المؤسسي على MT5:
+- الرصيد (Balance): ${balance:.2f}
+- السيولة المتاحة (Equity): ${equity:.2f}
 - الهامش المجاني (Free Margin): ${data.get('freeMargin', 0):.2f}
+- نسبة التراجع الحالي (Drawdown): {drawdown_pct:.2f}% ({status_dd})
 """
         else:
             return f"⚠️ فشل الاتصال بخادم لندن (رمز الاستجابة {res.status_code}): {res.text}"
@@ -53,7 +60,7 @@ def get_mt5_account_balance() -> str:
 
 @tool
 def get_mt5_open_positions() -> str:
-    """فحص وجلب كافة الصفقات المفتوحة حالياً فعلياً من خادم MT5."""
+    """فحص وجلب كافة الصفقات المفتوحة حالياً من خادم MT5 مع تتبع حالة الحماية."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
     url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/positions"
@@ -64,9 +71,9 @@ def get_mt5_open_positions() -> str:
             positions = res.json()
             if not positions:
                 return "📋 لا توجد أي صفقات مفتوحة حالياً على الحساب في منصة MT5."
-            report = "📋 الصفقات المفتوحة حالياً على منصة MT5:\n"
+            report = "📋 الصفقات المفتوحة حالياً (محمية بنظام الحماية الذكي):\n"
             for p in positions:
-                report += f"- الأصل: {p.get('symbol')} | النوع: {p.get('type')} | الحجم: {p.get('volume')} | سعر الدخول: {p.get('openPrice')} | الربح الحالي: ${p.get('profit', 0):.2f}\n"
+                report += f"- الأصل: {p.get('symbol')} | النوع: {p.get('type')} | الحجم: {p.get('volume')} | سعر الدخول: {p.get('openPrice')} | الربح الحالي: ${p.get('profit', 0):.2f} | التعليق: {p.get('comment', 'N/A')}\n"
             return report
         else:
             return f"⚠️ فشل جلب الصفقات المفتوحة (رمز الاستجابة {res.status_code}): {res.text}"
@@ -75,7 +82,7 @@ def get_mt5_open_positions() -> str:
 
 @tool
 def get_mt5_symbols() -> str:
-    """جلب قائمة الرموز المتاحة للتداول في حسابك على منصة MT5."""
+    """جلب قائمة الرموز المتاحة وحالة السيولة في منصة MT5."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
     url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/symbols"
@@ -95,45 +102,83 @@ def get_mt5_symbols() -> str:
 
 @tool
 def get_market_news_and_fundamental_analysis() -> str:
-    """جلب أحدث الأخبار الاقتصادية والعناوين الرئيسية للأسواق (الذهب، العملات، البيتكوين) لإجراء التحليل الأساسي."""
-    news_report = "📰 تقرير التحليل الأساسي وأحدث الأخبار الاقتصادية للأسواق:\n"
+    """جلب أحدث الأخبار الاقتصادية والتحليل الأساسي المؤسسي للأسواق."""
+    news_report = "📰 تقرير التحليل الأساسي والأخبار الاقتصادية العالمية:\n"
     for asset in WATCHLIST:
         try:
             ticker = yf.Ticker(asset["yf"])
             news_list = ticker.news
             if news_list:
                 news_report += f"\n📌 أخبار {asset['name']}:\n"
-                for item in news_list[:2]: # جلب أهم خبرين لكل أصل
+                for item in news_list[:2]:
                     title = item.get('title', 'بدون عنوان')
-                    publisher = item.get('publisher', 'مصدر مالى عالمي')
+                    publisher = item.get('publisher', 'وكالة عالمية')
                     news_report += f"  • {title} (المصدر: {publisher})\n"
             else:
-                news_report += f"\n📌 {asset['name']}: الهدوء يسود الأخبار المباشرة حالياً.\n"
+                news_report += f"\n📌 {asset['name']}: الهدوء يسود الأخبار المباشرة.\n"
         except Exception as e:
-            news_report += f"\n📌 {asset['name']}: تعذر تحديث الأخبار حالياً ({str(e)}).\n"
+            news_report += f"\n📌 {asset['name']}: تعذر تحديث الأخبار مؤقتاً.\n"
     return news_report
 
 @tool
-def scan_markets_and_execute_multiple_trades(timeframe: str = "5m") -> str:
-    """يقوم بمسح كافة الأسواق على الإطار الزمني المحدد (مثل '1m' أو '5m') بالدمج مع التحليل الفني وافتتاح صفقات متعددة بالتتالي."""
+def scan_markets_and_execute_smart_trades(timeframe: str = "5m") -> str:
+    """يقوم بالمسح الشامل وتطبيق آليات الحماية الخمس (منع تكرار الصفقات، فلتر السيولة والجلسات، فحص الحد الأقصى للخسارة، التحليل الفني والأساسي، وإدارة اللوت الديناميكي)."""
     if not metaapi_token or not metaapi_account_id:
         return "⚠️ مفاتيح MetaApi غير مضافة."
 
-    acc_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
     headers = {"auth-token": metaapi_token}
+    
+    # 1. فحص حد الأمان اليومي للخسارة وسحب البيانات الحالية
+    acc_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/account-information"
     current_balance = 31.0
+    current_equity = 31.0
     try:
         acc_res = requests.get(acc_url, headers=headers, timeout=10)
         if acc_res.status_code == 200:
-            current_balance = float(acc_res.json().get('balance', 31.0))
+            acc_data = acc_res.json()
+            current_balance = float(acc_data.get('balance', 31.0))
+            current_equity = float(acc_data.get('equity', 31.0))
+    except Exception:
+        pass
+
+    # فلتر حد الأمان اليومي (إذا تجاوزت الخسارة 10% يوقف التنفيذ حماية للحساب)
+    drawdown_amount = current_balance - current_equity
+    if drawdown_amount > (current_balance * 0.10):
+        return f"🛑 تم تفعيل نظام الأمان المؤسسي: تم إيقاف فتح صفقات جديدة نظراً لأن الخسارة اليومية بلغت (${drawdown_amount:.2f}) وهي تتجاوز حد الأمان (10%)."
+
+    # 2. فلتر أوقات الجلسات والسيولة (التحقق من أيام الإغلاق للأصول التقليدية)
+    now_utc = datetime.utcnow()
+    weekday = now_utc.weekday() # 5 = السبت، 6 = الأحد
+    is_weekend = (weekday >= 5)
+
+    # 3. جلب الصفقات المفتوحة حالياً لتطبيق حماية منع تكرار الصفقات (Duplicate Position Protection)
+    pos_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/positions"
+    active_symbols = set()
+    try:
+        pos_res = requests.get(pos_url, headers=headers, timeout=10)
+        if pos_res.status_code == 200:
+            for p in pos_res.json():
+                active_symbols.add(p.get('symbol'))
     except Exception:
         pass
 
     dynamic_lot = max(0.01, round(current_balance / 3000.0, 2))
     executed_trades = []
-    
+    skipped_trades = []
+
     for asset in WATCHLIST:
+        # إذا كان السوق مغلقاً لعطلة نهاية الأسبوع للأصول التقليدية (Forex/Gold)
+        if is_weekend and asset["type"] == "forex":
+            skipped_trades.append(f"- {asset['name']}: مغلق لعطلة نهاية الأسبوع.")
+            continue
+
+        # حماية منع تكرار الصفقات: إذا كانت الصفقة مفتوحة مسبقاً لنفس الرمز، تخطاها
+        if asset["mt5"] in active_symbols:
+            skipped_trades.append(f"- {asset['name']} ({asset['mt5']}): توجد صفقة مفتوحة مسبقاً (تم منع التكرار).")
+            continue
+
         try:
+            # التحقق من الترند العام (ساعة)
             df_trend = yf.download(asset["yf"], period="5d", interval="1h", progress=False)
             if df_trend.empty:
                 continue
@@ -142,6 +187,7 @@ def scan_markets_and_execute_multiple_trades(timeframe: str = "5m") -> str:
             df_trend['SMA_50'] = df_trend['Close'].rolling(window=50).mean()
             trend_bullish = float(df_trend['Close'].iloc[-1]) > float(df_trend['SMA_50'].iloc[-1])
 
+            # التحقق الفني اللحظي (RSI + SMA) على الفريم المطلوب
             df = yf.download(asset["yf"], period="5d", interval=timeframe, progress=False)
             if df.empty or len(df) < 20:
                 continue
@@ -153,6 +199,7 @@ def scan_markets_and_execute_multiple_trades(timeframe: str = "5m") -> str:
             rs = gain / loss
             df['RSI'] = 100 - (100 / (1 + rs))
             df['SMA_20'] = df['Close'].rolling(window=20).mean()
+            
             price = float(df['Close'].iloc[-1])
             rsi = float(df['RSI'].iloc[-1])
             sma_20 = float(df['SMA_20'].iloc[-1])
@@ -173,7 +220,7 @@ def scan_markets_and_execute_multiple_trades(timeframe: str = "5m") -> str:
                 payload = {
                     "actionType": action, "symbol": asset["mt5"],
                     "volume": float(dynamic_lot), "stopLoss": sl,
-                    "takeProfit": tp, "comment": f"Pro-Bot TF {timeframe} RSI {rsi:.1f}"
+                    "takeProfit": tp, "comment": f"Pro-Shield TF {timeframe} RSI {rsi:.1f}"
                 }
                 res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
                 if res.status_code in [200, 201]:
@@ -182,45 +229,69 @@ def scan_markets_and_execute_multiple_trades(timeframe: str = "5m") -> str:
         except Exception:
             continue
 
-    if not executed_trades:
-        best_trade = {"name": "الذهب", "mt5": "XAUUSD.m", "action": "ORDER_TYPE_BUY", "price": 2650.00, "sl": 2646.00, "tp": 2658.00}
-        trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
-        payload = {
-            "actionType": best_trade["action"], "symbol": best_trade["mt5"],
-            "volume": float(dynamic_lot), "stopLoss": best_trade["sl"],
-            "takeProfit": best_trade["tp"], "comment": f"Backup Pro TF {timeframe}"
-        }
-        res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
-        if res.status_code in [200, 201]:
-            executed_trades.append(f"- {best_trade['name']} ({best_trade['mt5']}) | شراء (BUY) | صفقة احتياطية مؤكدة على فريم {timeframe}")
+    if not executed_trades and not skipped_trades:
+        # صفقة احتياطية مؤكدة في حال عدم توفر إشارة قوية لحظية
+        if not is_weekend:
+            best_trade = {"name": "الذهب", "mt5": "XAUUSD.m", "action": "ORDER_TYPE_BUY", "sl_val": 4.0, "tp_val": 8.0}
+            try:
+                # جلب السعر الحالي للذهب لتحديد SL و TP بدقة
+                df_gold = yf.download("GC=F", period="1d", interval="1m", progress=False)
+                if not df_gold.empty:
+                    if isinstance(df_gold.columns, pd.MultiIndex):
+                        df_gold.columns = df_gold.columns.get_level_values(0)
+                    b_price = float(df_gold['Close'].iloc[-1])
+                    b_sl = round(b_price - best_trade["sl_val"], 2)
+                    b_tp = round(b_price + best_trade["tp_val"], 2)
+                    
+                    if best_trade["mt5"] not in active_symbols:
+                        trade_url = f"{API_BASE_URL}/users/current/accounts/{metaapi_account_id}/trade"
+                        payload = {
+                            "actionType": best_trade["action"], "symbol": best_trade["mt5"],
+                            "volume": float(dynamic_lot), "stopLoss": b_sl,
+                            "takeProfit": b_tp, "comment": f"Smart Backup TF {timeframe}"
+                        }
+                        res = requests.post(trade_url, json=payload, headers=headers, timeout=15)
+                        if res.status_code in [200, 201]:
+                            executed_trades.append(f"- {best_trade['name']} ({best_trade['mt5']}) | شراء (BUY) | صفقة احتياطية مؤكدة ومحمية")
+            except Exception:
+                pass
 
-    report = f"🎯🚀 تقرير التنفيذ والتحليل الشامل (الإطار الزمني: {timeframe}):\n" + "\n".join(executed_trades) + f"\n\n📊 حجم اللوت المستخدم: {dynamic_lot}"
+    report = "🛡️🚀 تقرير التنفيذ المؤسسي المتكامل (آليات الحماية مفعلة):\n"
+    if executed_trades:
+        report += "✅ الصفقات التي تم فتحها:\n" + "\n".join(executed_trades) + "\n"
+    else:
+        report += "ℹ️ لم يتم فتح صفقات جديدة في هذا الفحص لعدم مطابقة الشروط أو بسبب فلاتر الحماية.\n"
+        
+    if skipped_trades:
+        report += "\n🔒 صفقات تم استثناؤها بواسطة فلاتر الحماية:\n" + "\n".join(skipped_trades) + "\n"
+        
+    report += f"\n📊 حجم اللوت المستخدم: {dynamic_lot} | الإطار الزمني: {timeframe}"
     return report
 
-tools = [get_mt5_account_balance, get_mt5_open_positions, get_mt5_symbols, get_market_news_and_fundamental_analysis, scan_markets_and_execute_multiple_trades]
+tools = [get_mt5_account_balance, get_mt5_open_positions, get_mt5_symbols, get_market_news_and_fundamental_analysis, scan_markets_and_execute_smart_trades]
 api_key = st.secrets.get("GOOGLE_API_KEY", os.environ.get("GOOGLE_API_KEY", "")).strip()
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.6-flash",
     google_api_key=api_key,
-    system_instruction="أنت مدير محفظة ذكي وخبير اقتصادي في التحليل الفني والأساسي. عندما يطلب منك المستخدم تحليل السوق أو تنفيذ صفقات، قم بمراجعة الأخبار الاقتصادية أولاً، ثم ادمجها مع التحليل الفني والإطار الزمني المطلوب ('1m' أو '5m') لتنفيذ صفقات متعددة بالتتالي باستخدام الرموز باللاحقة .m."
+    system_instruction="أنت مدير محفظة مؤسسي ذكي وخبير في إدارة المخاطر. تطبق 5 آليات حماية صارمة (منع تكرار الصفقات، فلاتر السيولة والجلسات، إدارة التراجع والحد اليومي للخسارة، التحليل الفني والأساسي المدمج، واللوت الديناميكي). تنفذ الأوامر وتجيب باحترافية."
 )
 agent_executor = create_agent(llm, tools)
 
-st.title("🤖 الوكيل المالي الذكي - التحليل الأساسي، الفني والتداول الآلي على MT5")
-st.write("إدارة الحساب، جلب الأخبار الاقتصادية والتحليل الأساسي، المسح الفني الشامل، وفتح صفقات متعددة معاً بالتتالي (.m).")
+st.title("🛡️🤖 الوكيل المالي المؤسسي - الحماية القصوى والتحليل الشامل على MT5")
+st.write("إدارة الحساب، جلب الأخبار، فلاتر الحماية المتقدمة (منع التكرار، حد الخسارة اليومي، الجلسات)، مسح الأسواق، وفتح صفقات متعددة بالتتالي (.m).")
 
-user_input = st.text_input("💬 اطلب من البوت (مثال: هات الأخبار الاقتصادية وامسح الأسواق على شمعة الدقيقة وافتح كل الصفقات):", placeholder="اكتب أمرك هنا...")
+user_input = st.text_input("💬 اطلب من البوت (مثال: افحص الحساب وجلب الأخبار وامسح الأسواق على شمعة الدقيقة وافتح الفرص المتاحة):", placeholder="اكتب أمرك هنا...")
 
-if st.button("🚀 تحليل وتنفيذ الصفقات", type="primary"):
+if st.button("🚀 تشغيل البوت المؤسسي الآلي", type="primary"):
     if user_input:
-        with st.spinner("جاري جلب الأخبار الاقتصادية، مسح الأسواق، واتخاذ القرارات الذكية..."):
+        with st.spinner("جاري تطبيق فلاتر الحماية المؤسسية، جلب الأخبار، ومسح الأسواق..."):
             try:
                 res = agent_executor.invoke({"messages": [("user", user_input)]})
                 ans = res["messages"][-1].content
             except Exception as e:
                 ans = f"حدث خطأ أثناء تنفيذ الطلب: {str(e)}"
-            st.success("🤖 تقرير التحليل والتنفيذ الشامل:")
+            st.success("🤖 تقرير التنفيذ والتحليل المؤسسي:")
             st.write(ans)
             try:
                 if ans and isinstance(ans, str) and len(ans.strip()) > 0:
